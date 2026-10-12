@@ -348,6 +348,7 @@ declare class BoschSmartHomeCamera extends utils.Adapter {
     private _lastFrontBrightness;
     /** Per-camera lock shared by every writer of the Gen2 lighting state. */
     private _lightingLocks;
+    private _lightingGen;
     private _intrusionConfigCache;
     private _audioCache;
     private _lensElevationCache;
@@ -1388,6 +1389,7 @@ declare class BoschSmartHomeCamera extends utils.Adapter {
      * @param on     desired value
      */
     private _handleNotificationTypeWrite;
+    private _withLightingLock;
     /**
      * v1.7.x: serialize writes to a shared per-camera cache-backed endpoint.
      * Chains `fn` onto whatever promise is already queued for `camId` in

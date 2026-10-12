@@ -433,6 +433,9 @@ class BoschSmartHomeCamera extends utils.Adapter {
     _lastFrontBrightness = new Map();
     /** Per-camera lock shared by every writer of the Gen2 lighting state. */
     _lightingLocks = new Map();
+    // Bumped when a lighting writer starts and ends; a poll GET that straddles
+    // either edge holds pre-write data and must not touch cache or DPs.
+    _lightingGen = new Map();
     // v0.7.14: cached intrusionDetectionConfig body from cloud GET so the
     // user-write handler can merge a single field (sensitivity/distance)
     // into the full body. Bosch rejects DELTA PUTs with HTTP 400.
@@ -5595,8 +5598,9 @@ class BoschSmartHomeCamera extends utils.Adapter {
         if (cam.generation < 2 || cam.featureLight !== true) {
             return;
         }
+        const genAtStart = this._lightingGen.get(cam.id) ?? 0;
         const ls = await (0, alarm_light_1.fetchLightingState)(this._httpClient, token, cam.id);
-        if (!ls) {
+        if (!ls || (this._lightingGen.get(cam.id) ?? 0) !== genAtStart) {
             return;
         }
         this._lightingCache.set(cam.id, ls);
@@ -5625,6 +5629,9 @@ class BoschSmartHomeCamera extends utils.Adapter {
             this.getStateAsync(`cameras.${cam.id}.bottom_led_brightness`),
             this.getStateAsync(`cameras.${cam.id}.front_light_white_balance`),
         ]);
+        if ((this._lightingGen.get(cam.id) ?? 0) !== genAtStart) {
+            return;
+        }
         const writes = [];
         if (curBr?.val !== brightness) {
             writes.push(this.upsertState(`cameras.${cam.id}.wallwasher_brightness`, brightness));
@@ -7786,6 +7793,20 @@ class BoschSmartHomeCamera extends utils.Adapter {
         return true;
     }
     // ── v1.7.x generic per-camera write lock ────────────────────────────────
+    _withLightingLock(camId, fn) {
+        const bump = () => {
+            this._lightingGen.set(camId, (this._lightingGen.get(camId) ?? 0) + 1);
+        };
+        return this._withCameraLock(this._lightingLocks, camId, async () => {
+            bump();
+            try {
+                return await fn();
+            }
+            finally {
+                bump();
+            }
+        });
+    }
     /**
      * v1.7.x: serialize writes to a shared per-camera cache-backed endpoint.
      * Chains `fn` onto whatever promise is already queued for `camId` in
@@ -8829,7 +8850,7 @@ class BoschSmartHomeCamera extends utils.Adapter {
      * @param delta.color
      */
     async handleWallwasherUpdate(camId, delta) {
-        return this._withCameraLock(this._lightingLocks, camId, () => this.handleWallwasherUpdateLocked(camId, delta));
+        return this._withLightingLock(camId, () => this.handleWallwasherUpdateLocked(camId, delta));
     }
     async handleWallwasherUpdateLocked(camId, delta) {
         const cam = this._cameras.get(camId);
@@ -8892,7 +8913,7 @@ class BoschSmartHomeCamera extends utils.Adapter {
      * @param brightness  0..100
      */
     async handleFrontLightIntensityUpdate(camId, brightness) {
-        return this._withCameraLock(this._lightingLocks, camId, () => this.handleFrontLightIntensityUpdateLocked(camId, brightness));
+        return this._withLightingLock(camId, () => this.handleFrontLightIntensityUpdateLocked(camId, brightness));
     }
     async handleFrontLightIntensityUpdateLocked(camId, brightness) {
         const cam = this._cameras.get(camId);
@@ -8944,7 +8965,7 @@ class BoschSmartHomeCamera extends utils.Adapter {
      * @param brightness 0..100
      */
     async handleLedGroupBrightnessUpdate(camId, groupKey, brightness) {
-        return this._withCameraLock(this._lightingLocks, camId, () => this.handleLedGroupBrightnessUpdateLocked(camId, groupKey, brightness));
+        return this._withLightingLock(camId, () => this.handleLedGroupBrightnessUpdateLocked(camId, groupKey, brightness));
     }
     async handleLedGroupBrightnessUpdateLocked(camId, groupKey, brightness) {
         const cam = this._cameras.get(camId);
@@ -8997,7 +9018,7 @@ class BoschSmartHomeCamera extends utils.Adapter {
      *   light.py polarity.
      */
     async handleFrontLightWhiteBalanceUpdate(camId, whiteBalance) {
-        return this._withCameraLock(this._lightingLocks, camId, () => this.handleFrontLightWhiteBalanceUpdateLocked(camId, whiteBalance));
+        return this._withLightingLock(camId, () => this.handleFrontLightWhiteBalanceUpdateLocked(camId, whiteBalance));
     }
     async handleFrontLightWhiteBalanceUpdateLocked(camId, whiteBalance) {
         const cam = this._cameras.get(camId);
@@ -10002,10 +10023,12 @@ class BoschSmartHomeCamera extends utils.Adapter {
      * @param enabled
      */
     async handleFrontLightToggle(camId, enabled) {
-        const currentWallwasher = await this._readBoolState(`cameras.${camId}.wallwasher_enabled`);
-        await this._applyLightingState(camId, {
-            frontLight: enabled,
-            wallwasher: currentWallwasher,
+        await this._withLightingLock(camId, async () => {
+            const currentWallwasher = await this._readBoolState(`cameras.${camId}.wallwasher_enabled`);
+            await this._applyLightingStateLocked(camId, {
+                frontLight: enabled,
+                wallwasher: currentWallwasher,
+            });
         });
         const pendingWb = this._pendingFrontWb.get(camId);
         if (enabled && pendingWb !== undefined) {
@@ -10023,10 +10046,12 @@ class BoschSmartHomeCamera extends utils.Adapter {
      * @param enabled
      */
     async handleWallwasherToggle(camId, enabled) {
-        const currentFront = await this._readBoolState(`cameras.${camId}.front_light_enabled`);
-        await this._applyLightingState(camId, {
-            frontLight: currentFront,
-            wallwasher: enabled,
+        await this._withLightingLock(camId, async () => {
+            const currentFront = await this._readBoolState(`cameras.${camId}.front_light_enabled`);
+            await this._applyLightingStateLocked(camId, {
+                frontLight: currentFront,
+                wallwasher: enabled,
+            });
         });
     }
     /**
@@ -10058,7 +10083,7 @@ class BoschSmartHomeCamera extends utils.Adapter {
      * @param state.wallwasher
      */
     async _applyLightingState(camId, state) {
-        return this._withCameraLock(this._lightingLocks, camId, () => this._applyLightingStateLocked(camId, state));
+        return this._withLightingLock(camId, () => this._applyLightingStateLocked(camId, state));
     }
     async _applyLightingStateLocked(camId, state) {
         if (!this._currentAccessToken) {

@@ -315,6 +315,7 @@ describe("lighting writers — shared per-camera lock and merge safety", functio
     this.timeout(15_000);
     let calls: Call[];
     let gate: Promise<void> | null;
+    let getGate: Promise<void> | null;
 
     afterEach(() => {
         restoreAxios();
@@ -329,6 +330,7 @@ describe("lighting writers — shared per-camera lock and merge safety", functio
     ): Promise<{ db: MockDatabase; adapter: TestAdapter }> {
         calls = [];
         gate = null;
+        getGate = null;
         const made = makeAdapter({
             cameraBody: CAM_GEN2_LIGHT_BODY,
             axiosByUrl: [{ match: "/v11/video_inputs", status: 200, data: CAM_GEN2_LIGHT_BODY }],
@@ -350,7 +352,12 @@ describe("lighting writers — shared per-camera lock and merge safety", functio
             });
             if (url.endsWith("/lighting/switch") && method === "get") {
                 calls.push({ method, url, body: null });
-                return mk(200, SERVER_STATE);
+                // Snapshot before the gate so a delayed GET returns pre-write data.
+                const snap = JSON.parse(JSON.stringify(SERVER_STATE));
+                const g = getGate;
+                getGate = null;
+                if (g) await g;
+                return mk(200, snap);
             }
             if (url.endsWith("/lighting/switch") && method === "put") {
                 calls.push({ method, url, body });
@@ -467,5 +474,83 @@ describe("lighting writers — shared per-camera lock and merge safety", functio
             wallwasher: true,
         });
         expect(getStateVal(db, adapter, `cameras.${CAM_GEN2_LIGHT}.light_enabled`)).to.equal(true);
+    });
+
+    it("a poll GET that straddles a writer must not overwrite the cache or DPs with stale data", async () => {
+        const { db, adapter } = await boot();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const a = adapter as any;
+        const cam = a._cameras.get(CAM_GEN2_LIGHT);
+        a._lightingCache.set(CAM_GEN2_LIGHT, JSON.parse(JSON.stringify(SERVER_STATE)));
+        let release!: () => void;
+        getGate = new Promise<void>((r) => {
+            release = r;
+        });
+        const poll = a._pollSingleCameraState("stored.acc", cam, false);
+        await new Promise((r) => setImmediate(r));
+        await a.handleFrontLightIntensityUpdate(CAM_GEN2_LIGHT, 90);
+        release();
+        await poll;
+        expect(a._lightingCache.get(CAM_GEN2_LIGHT).frontLightSettings.brightness).to.equal(90);
+        expect(
+            getStateVal(db, adapter, `cameras.${CAM_GEN2_LIGHT}.front_light_intensity`),
+        ).to.not.equal(60);
+    });
+
+    it("a poll with no concurrent writer still refreshes the cache", async () => {
+        const { adapter } = await boot();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const a = adapter as any;
+        const cam = a._cameras.get(CAM_GEN2_LIGHT);
+        a._lightingCache.delete(CAM_GEN2_LIGHT);
+        await a._pollSingleCameraState("stored.acc", cam, false);
+        expect(a._lightingCache.get(CAM_GEN2_LIGHT).frontLightSettings.brightness).to.equal(60);
+    });
+
+    it("a poll is not blocked behind a writer chain (no lock wait)", async () => {
+        const { adapter } = await boot();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const a = adapter as any;
+        const cam = a._cameras.get(CAM_GEN2_LIGHT);
+        a._lightingCache.set(CAM_GEN2_LIGHT, JSON.parse(JSON.stringify(SERVER_STATE)));
+        let release!: () => void;
+        gate = new Promise<void>((r) => {
+            release = r;
+        });
+        const w = a.handleFrontLightIntensityUpdate(CAM_GEN2_LIGHT, 90);
+        await new Promise((r) => setImmediate(r));
+        await a._pollSingleCameraState("stored.acc", cam, false);
+        release();
+        await w;
+    });
+
+    it("front and wallwasher toggles fired together do not undo each other", async () => {
+        const { db, adapter } = await boot();
+        const ns = adapter.namespace;
+        db.publishState(`${ns}.cameras.${CAM_GEN2_LIGHT}.front_light_enabled`, {
+            val: false,
+            ack: true,
+        });
+        db.publishState(`${ns}.cameras.${CAM_GEN2_LIGHT}.wallwasher_enabled`, {
+            val: false,
+            ack: true,
+        });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const a = adapter as any;
+        await Promise.all([
+            a.handleFrontLightToggle(CAM_GEN2_LIGHT, true),
+            a.handleWallwasherToggle(CAM_GEN2_LIGHT, true),
+        ]);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const lastBody = (suffix: string): any =>
+            calls.filter((c) => c.method === "put" && c.url.endsWith(suffix)).pop()!.body;
+        expect(lastBody("/switch/front").enabled).to.equal(true);
+        expect(lastBody("/switch/topdown").enabled).to.equal(true);
+        expect(getStateVal(db, adapter, `cameras.${CAM_GEN2_LIGHT}.front_light_enabled`)).to.equal(
+            true,
+        );
+        expect(getStateVal(db, adapter, `cameras.${CAM_GEN2_LIGHT}.wallwasher_enabled`)).to.equal(
+            true,
+        );
     });
 });
