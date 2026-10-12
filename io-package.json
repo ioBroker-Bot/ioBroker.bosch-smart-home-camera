@@ -1,8 +1,21 @@
 {
     "common": {
         "name": "bosch-smart-home-camera",
-        "version": "1.10.2",
+        "version": "1.10.3",
         "news": {
+            "1.10.3": {
+                "en": "Fixed: stale FCM device token is logged out after a confirmed registration; lighting writes serialized per camera (no lost updates, no front-light/wall-washer toggle fighting), stale poll results dropped, front and wall-washer results acknowledged separately; first feature-flags fetch retried once after a timeout.",
+                "de": "Behoben: veraltetes FCM-Geräte-Token wird nach bestätigter Registrierung abgemeldet; Licht-Schreibzugriffe pro Kamera serialisiert (keine verlorenen Updates, kein Gegeneinander von Frontlicht/Wallwasher), veraltete Poll-Ergebnisse verworfen, Front- und Wallwasher-Ergebnisse getrennt quittiert; erster Feature-Flags-Abruf wird nach Timeout einmal wiederholt.",
+                "ru": "Исправлено: устаревший токен устройства FCM отзывается после подтверждённой регистрации; записи освещения сериализованы по камерам (без потерянных обновлений и конфликтов переключения переднего света/Wall-Washer), устаревшие результаты опроса отбрасываются, результаты переднего света и Wall-Washer подтверждаются отдельно; первый запрос feature-flags повторяется один раз после тайм-аута.",
+                "pt": "Corrigido: token de dispositivo FCM obsoleto é desconectado após registo confirmado; escritas de iluminação serializadas por câmara (sem atualizações perdidas, sem conflito entre luz frontal e wall-washer), resultados de poll obsoletos descartados, resultados da luz frontal e do wall-washer confirmados separadamente; primeira obtenção de feature-flags repetida uma vez após timeout.",
+                "nl": "Opgelost: verouderd FCM-apparaattoken wordt afgemeld na bevestigde registratie; verlichtingsschrijfacties per camera geserialiseerd (geen verloren updates, geen conflicterende voorlicht-/wall-washer-schakelaars), verouderde poll-resultaten genegeerd, voorlicht- en wall-washer-resultaten apart bevestigd; eerste feature-flags-ophaling eenmaal herhaald na time-out.",
+                "fr": "Corrigé : le jeton d'appareil FCM obsolète est déconnecté après un enregistrement confirmé ; écritures d'éclairage sérialisées par caméra (pas de mises à jour perdues, pas de conflit entre éclairage frontal et wall-washer), résultats de sondage obsolètes ignorés, résultats frontal et wall-washer acquittés séparément ; première récupération des feature-flags répétée une fois après un délai dépassé.",
+                "it": "Corretto: token dispositivo FCM obsoleto disconnesso dopo registrazione confermata; scritture di illuminazione serializzate per telecamera (senza aggiornamenti persi, nessun conflitto tra luce frontale e wall-washer), risultati di poll obsoleti scartati, risultati di luce frontale e wall-washer confermati separatamente; primo recupero dei feature-flags ripetuto una volta dopo timeout.",
+                "es": "Corregido: token de dispositivo FCM obsoleto desconectado tras registro confirmado; escrituras de iluminación serializadas por cámara (sin actualizaciones perdidas, sin conflicto entre luz frontal y wall-washer), resultados de sondeo obsoletos descartados, resultados de luz frontal y wall-washer confirmados por separado; primera obtención de feature-flags repetida una vez tras timeout.",
+                "pl": "Naprawiono: nieaktualny token FCM wylogowany po potwierdzonej rejestracji; zapisy oświetlenia serializowane dla każdej kamery (brak utraconych aktualizacji, brak konfliktu przełączania światła przedniego i wall-washer), nieaktualne wyniki odpytywania odrzucane, wyniki światła przedniego i wall-washer potwierdzane osobno; pierwsze pobranie feature-flags powtórzone raz po timeout.",
+                "uk": "Виправлено: застарілий токен FCM відкликається після підтвердженої реєстрації; записи освітлення серіалізовано для кожної камери (без втрачених оновлень і конфліктів перемикання переднього світла/wall-washer), застарілі результати опитування відкидаються, результати переднього світла та wall-washer підтверджуються окремо; перше отримання feature-flags повторюється один раз після тайм-ауту.",
+                "zh-cn": "已修复：确认注册后注销过期的 FCM 设备令牌；照明写入按摄像头串行化（无丢失更新，前灯与洗墙灯切换不再相互冲突），丢弃过期轮询结果，前灯与洗墙灯结果分别确认；首次获取 feature-flags 超时后重试一次。"
+            },
             "1.10.2": {
                 "en": "Fixed: Gen2 front-light white balance is now applied even while the light is off or at brightness 0 (held until next ON, or brightness restored).",
                 "de": "Behoben: Weißabgleich des Gen2-Frontlichts wird jetzt auch bei ausgeschaltetem Licht oder Helligkeit 0 übernommen (bis zum nächsten Einschalten gehalten bzw. Helligkeit wiederhergestellt).",
@@ -80,19 +93,6 @@
                 "pl": "Wersja dostępna tylko w Dokumentach: poprawiono wiersz MCP we udostępnionej tabeli porównawczej integracji; szerszy przebieg dokładności README. Żadnych zmian funkcjonalnych.",
                 "uk": "Випуск лише для документів: виправлено рядок MCP у спільній таблиці порівняння інтеграції; ширший пропуск точності README. Без функціональних змін.",
                 "zh-cn": "仅文档版本：修复了共享集成比较表中的 MCP 行；更广泛的自述文件准确性通过。没有功能变化。"
-            },
-            "1.8.2": {
-                "en": "Docs-only release: refreshed sibling-repo version table in README. No functional changes.",
-                "de": "Reines Doku-Release: aktualisierte Versionstabelle der Schwester-Repos im README. Keine funktionalen Änderungen.",
-                "ru": "Версия только для документации: обновлена ​​таблица версий родственного репозитория в README. Никаких функциональных изменений.",
-                "pt": "Versão somente do Docs: tabela de versão do repositório irmão atualizada no README. Sem alterações funcionais.",
-                "nl": "Uitgave voor alleen documenten: vernieuwde versietabel voor broers en zussen in README. Geen functionele wijzigingen.",
-                "fr": "Version Docs uniquement : tableau des versions des dépôts frères et sœurs actualisé dans README. Aucun changement fonctionnel.",
-                "it": "Versione solo documentazione: tabella delle versioni dei repository di pari livello aggiornata nel README. Nessuna modifica funzionale.",
-                "es": "Versión solo de documentos: tabla de versión actualizada del repositorio de hermanos en README. Sin cambios funcionales.",
-                "pl": "Wersja tylko dla dokumentów: odświeżona tabela wersji repozytorium rodzeństwa w pliku README. Żadnych zmian funkcjonalnych.",
-                "uk": "Випуск лише для документів: оновлена ​​таблиця версій однотипного сховища в README. Без функціональних змін.",
-                "zh-cn": "仅文档版本：刷新自述文件中的同级存储库版本表。没有功能变化。"
             }
         },
         "titleLang": {

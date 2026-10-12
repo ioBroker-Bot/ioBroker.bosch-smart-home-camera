@@ -962,6 +962,11 @@ HA stays the **reference implementation** — features land there first; the Pyt
 
 ## Changelog
 
+### 1.10.3 (2026-10-12)
+- Fixed: a stale FCM device token is now logged out after a confirmed registration.
+- Fixed: lighting writes are serialized per camera (no lost updates, no front-light / wall-washer toggle fighting); stale poll results are dropped; front-light and wall-washer results are acknowledged separately.
+- Fixed: the first feature-flags fetch is retried once after a timeout (single timer).
+
 ### 1.10.2 (2026-10-06)
 - Fixed: the Gen2 front-light white balance is now applied even while the light is off or at brightness 0. The value is held until the light is next switched on; if the light is on with cached brightness 0, the last non-zero brightness is restored. Writes are serialized per camera.
 
