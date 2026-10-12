@@ -372,6 +372,8 @@ class BoschSmartHomeCamera extends utils.Adapter {
     _featureFlagsAnswered = false;
     /** Short-retry attempts used for the first feature-flags fetch after start. */
     _featureFlagsRetries = 0;
+    /** Single pending first-fetch retry timer (overlapping polls must not stack timers). */
+    _featureFlagsRetryTimer = null;
     static FIRST_FETCH_RETRY_MS = 30_000;
     static FIRST_FETCH_MAX_RETRIES = 3;
     /** Slow-tier runs every SLOW_TIER_THRESHOLD state-poll ticks (5 × 60s = 300s). */
@@ -6392,13 +6394,16 @@ class BoschSmartHomeCamera extends utils.Adapter {
                 this._featureFlagsAnswered = true;
             }
             else if (!this._featureFlagsAnswered &&
-                this._featureFlagsRetries < BoschSmartHomeCamera.FIRST_FETCH_MAX_RETRIES) {
+                this._featureFlagsRetries < BoschSmartHomeCamera.FIRST_FETCH_MAX_RETRIES &&
+                !this._featureFlagsRetryTimer &&
+                !this._isUnloading) {
                 // First fetch after start got no response: retry shortly instead of
                 // waiting a full slow-tier interval.
                 this._featureFlagsRetries++;
-                this.setTimeout(() => {
+                this._featureFlagsRetryTimer = this.setTimeout(() => {
+                    this._featureFlagsRetryTimer = null;
                     const t = this._currentAccessToken;
-                    if (t && !this._featureFlagsAnswered) {
+                    if (t && !this._featureFlagsAnswered && !this._isUnloading) {
                         void this._pollFeatureFlags(t).catch(() => undefined);
                     }
                 }, BoschSmartHomeCamera.FIRST_FETCH_RETRY_MS);
@@ -10107,22 +10112,21 @@ class BoschSmartHomeCamera extends utils.Adapter {
         let cloudWallOk = true; // Gen1 wallwasher is covered by the single override PUT
         if (isGen2) {
             const base = `${auth_1.CLOUD_API}/v11/video_inputs/${camId}/lighting/switch`;
-            try {
-                const [r1, r2] = await Promise.all([
-                    this._httpClient.put(`${base}/front`, { enabled: state.frontLight }, { headers, validateStatus: () => true }),
-                    this._httpClient.put(`${base}/topdown`, { enabled: state.wallwasher }, { headers, validateStatus: () => true }),
-                ]);
-                const ok1 = [200, 201, 204].includes(r1.status);
-                const ok2 = [200, 201, 204].includes(r2.status);
-                cloudFrontOk = ok1;
-                cloudWallOk = ok2;
-                if (!ok1 || !ok2) {
-                    cloudFrontErr = `HTTP front=${r1.status} topdown=${r2.status}`;
-                }
-            }
-            catch (err) {
-                cloudWallOk = false;
-                cloudFrontErr = err instanceof Error ? err.message : String(err);
+            // allSettled: the lock must not release while the other PUT is in flight,
+            // and each group is confirmed on its own result.
+            const [s1, s2] = await Promise.allSettled([
+                this._httpClient.put(`${base}/front`, { enabled: state.frontLight }, { headers, validateStatus: () => true }),
+                this._httpClient.put(`${base}/topdown`, { enabled: state.wallwasher }, { headers, validateStatus: () => true }),
+            ]);
+            const describe = (s) => s.status === "fulfilled"
+                ? String(s.value.status)
+                : s.reason instanceof Error
+                    ? s.reason.message
+                    : String(s.reason);
+            cloudFrontOk = s1.status === "fulfilled" && [200, 201, 204].includes(s1.value.status);
+            cloudWallOk = s2.status === "fulfilled" && [200, 201, 204].includes(s2.value.status);
+            if (!cloudFrontOk || !cloudWallOk) {
+                cloudFrontErr = `HTTP front=${describe(s1)} topdown=${describe(s2)}`;
             }
             // v0.7.5: Gen2 front-light local RCP fallback (HTTPS port 443 + Digest auth;
             // mirrors HA's rcp_local_write_front_light). Wallwasher stays cloud-only
@@ -10922,6 +10926,10 @@ class BoschSmartHomeCamera extends utils.Adapter {
                 if (this._refreshTimeout) {
                     this.clearTimeout(this._refreshTimeout);
                     this._refreshTimeout = null;
+                }
+                if (this._featureFlagsRetryTimer) {
+                    this.clearTimeout(this._featureFlagsRetryTimer);
+                    this._featureFlagsRetryTimer = null;
                 }
                 // Stop all vis-2 widget MJPEG FFmpeg streams
                 if (this._webStream) {

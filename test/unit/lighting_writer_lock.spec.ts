@@ -553,4 +553,131 @@ describe("lighting writers — shared per-camera lock and merge safety", functio
             true,
         );
     });
+
+    it("Gen2 on/off: lock is held until BOTH PUTs settle; late success is still acked", async () => {
+        const { db, adapter } = await boot();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const a = adapter as any;
+        const ns = adapter.namespace;
+        db.publishState(`${ns}.cameras.${CAM_GEN2_LIGHT}.wallwasher_enabled`, {
+            val: false,
+            ack: true,
+        });
+        const urls: string[] = [];
+        let releaseTopdown!: () => void;
+        const topdownGate = new Promise<void>((r) => {
+            releaseTopdown = r;
+        });
+        a._httpClient.put = async (url: string) => {
+            urls.push(url);
+            if (url.endsWith("/switch/front")) {
+                throw new Error("fake network error");
+            }
+            await topdownGate;
+            return { status: 204 };
+        };
+        const p1 = a._applyLightingState(CAM_GEN2_LIGHT, { frontLight: true, wallwasher: true });
+        const p1Result = p1.then(
+            () => "ok",
+            () => "err",
+        );
+        const p2 = a._applyLightingState(CAM_GEN2_LIGHT, { frontLight: false, wallwasher: false });
+        const p2Result = p2.then(
+            () => "ok",
+            () => "err",
+        );
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+        // Front already failed, topdown still in flight: second writer must wait.
+        expect(urls).to.have.length(2);
+        releaseTopdown();
+        expect(await p1Result).to.equal("err");
+        await p2Result;
+        // Late topdown success of writer 1 was confirmed before writer 2 ran.
+        expect(urls.length).to.equal(4);
+        expect(urls.slice(0, 2).every((u) => u.includes("/switch/"))).to.equal(true);
+    });
+
+    it("Gen2 on/off: failed front + late topdown success acks the wallwasher group", async () => {
+        const { db, adapter } = await boot();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const a = adapter as any;
+        db.publishState(`${adapter.namespace}.cameras.${CAM_GEN2_LIGHT}.wallwasher_enabled`, {
+            val: false,
+            ack: true,
+        });
+        a._httpClient.put = async (url: string) => {
+            if (url.endsWith("/switch/front")) {
+                throw new Error("fake network error");
+            }
+            await new Promise((r) => setTimeout(r, 20));
+            return { status: 204 };
+        };
+        let threw = false;
+        try {
+            await a._applyLightingState(CAM_GEN2_LIGHT, { frontLight: true, wallwasher: true });
+        } catch {
+            threw = true;
+        }
+        expect(threw).to.equal(true);
+        expect(getStateVal(db, adapter, `cameras.${CAM_GEN2_LIGHT}.wallwasher_enabled`)).to.equal(
+            true,
+        );
+    });
+
+    it("first feature-flags fetch: overlapping polls arm a single retry timer within budget", async () => {
+        const { adapter } = await boot();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const a = adapter as any;
+        const timers: Array<{ fn: () => void; cleared: boolean }> = [];
+        // Only the 30 s first-fetch retry timers; unrelated adapter timers are ignored.
+        a.setTimeout = (fn: () => void, ms: number) => {
+            const t = { fn, cleared: false };
+            if (ms === 30_000) timers.push(t);
+            return t;
+        };
+        a.clearTimeout = (t: { cleared: boolean }) => {
+            t.cleared = true;
+        };
+        a._featureFlagsAnswered = false;
+        a._featureFlagsRetries = 0;
+        a._featureFlagsRetryTimer = null;
+        a._currentAccessToken = "fake.acc";
+        a._httpClient.get = async () => {
+            throw new Error("fake timeout");
+        };
+        await Promise.all([a._pollFeatureFlags("fake.acc"), a._pollFeatureFlags("fake.acc")]);
+        expect(timers).to.have.length(1);
+        expect(a._featureFlagsRetries).to.equal(1);
+        // Fire the pending retry: it re-arms exactly one more, budget stays 3 total.
+        timers[0].fn();
+        await new Promise((r) => setImmediate(r));
+        expect(timers).to.have.length(2);
+        timers[1].fn();
+        await new Promise((r) => setImmediate(r));
+        timers[2].fn();
+        await new Promise((r) => setImmediate(r));
+        expect(timers).to.have.length(3);
+        expect(a._featureFlagsRetries).to.equal(3);
+    });
+
+    it("first feature-flags retry: no timer after unload starts", async () => {
+        const { adapter } = await boot();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const a = adapter as any;
+        const timers: unknown[] = [];
+        a.setTimeout = (fn: () => void, ms: number) => {
+            if (ms === 30_000) timers.push(fn);
+            return {};
+        };
+        a._featureFlagsAnswered = false;
+        a._featureFlagsRetries = 0;
+        a._featureFlagsRetryTimer = null;
+        a._isUnloading = true;
+        a._httpClient.get = async () => {
+            throw new Error("fake timeout");
+        };
+        await a._pollFeatureFlags("fake.acc");
+        expect(timers).to.have.length(0);
+    });
 });

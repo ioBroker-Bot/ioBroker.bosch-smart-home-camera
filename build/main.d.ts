@@ -292,6 +292,8 @@ declare class BoschSmartHomeCamera extends utils.Adapter {
     private _featureFlagsAnswered;
     /** Short-retry attempts used for the first feature-flags fetch after start. */
     private _featureFlagsRetries;
+    /** Single pending first-fetch retry timer (overlapping polls must not stack timers). */
+    private _featureFlagsRetryTimer;
     private static readonly FIRST_FETCH_RETRY_MS;
     private static readonly FIRST_FETCH_MAX_RETRIES;
     /** Slow-tier runs every SLOW_TIER_THRESHOLD state-poll ticks (5 × 60s = 300s). */
