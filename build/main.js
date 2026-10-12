@@ -368,6 +368,12 @@ class BoschSmartHomeCamera extends utils.Adapter {
      * STATE_POLL_INTERVAL_MS=60s × 5 = 300s cadence — mirrors HA's do_slow logic.
      */
     _diagPollTick = 0;
+    /** True once the account-level feature-flags fetch got any HTTP response. */
+    _featureFlagsAnswered = false;
+    /** Short-retry attempts used for the first feature-flags fetch after start. */
+    _featureFlagsRetries = 0;
+    static FIRST_FETCH_RETRY_MS = 30_000;
+    static FIRST_FETCH_MAX_RETRIES = 3;
     /** Slow-tier runs every SLOW_TIER_THRESHOLD state-poll ticks (5 × 60s = 300s). */
     static SLOW_TIER_THRESHOLD = 5;
     /** v0.7.4: outage-ping throttle (ms). */
@@ -425,7 +431,8 @@ class BoschSmartHomeCamera extends utils.Adapter {
     _pendingFrontWb = new Map();
     /** Last non-zero front brightness per camera (restored for WB writes at brightness 0). */
     _lastFrontBrightness = new Map();
-    _frontWbLocks = new Map();
+    /** Per-camera lock shared by every writer of the Gen2 lighting state. */
+    _lightingLocks = new Map();
     // v0.7.14: cached intrusionDetectionConfig body from cloud GET so the
     // user-write handler can merge a single field (sensitivity/distance)
     // into the full body. Bosch rejects DELTA PUTs with HTTP 400.
@@ -6368,7 +6375,27 @@ class BoschSmartHomeCamera extends utils.Adapter {
      */
     async _pollFeatureFlags(token) {
         try {
-            const result = await (0, cloud_feature_flags_1.fetchFeatureFlags)(this._httpClient, token);
+            let noResponse = false;
+            const result = await (0, cloud_feature_flags_1.fetchFeatureFlags)(this._httpClient, token, {
+                onNoResponse: () => {
+                    noResponse = true;
+                },
+            });
+            if (!noResponse) {
+                this._featureFlagsAnswered = true;
+            }
+            else if (!this._featureFlagsAnswered &&
+                this._featureFlagsRetries < BoschSmartHomeCamera.FIRST_FETCH_MAX_RETRIES) {
+                // First fetch after start got no response: retry shortly instead of
+                // waiting a full slow-tier interval.
+                this._featureFlagsRetries++;
+                this.setTimeout(() => {
+                    const t = this._currentAccessToken;
+                    if (t && !this._featureFlagsAnswered) {
+                        void this._pollFeatureFlags(t).catch(() => undefined);
+                    }
+                }, BoschSmartHomeCamera.FIRST_FETCH_RETRY_MS);
+            }
             if (!result) {
                 return;
             }
@@ -8791,8 +8818,7 @@ class BoschSmartHomeCamera extends utils.Adapter {
      * The Bosch lighting/switch endpoint requires the full body — caller
      * passes only the delta and we merge into the cached state. If we have
      * no cache yet (first call after start, before the state-poll tick has
-     * fetched), seed with `DEFAULT_LIGHTING_STATE` so the front spotlight
-     * isn't accidentally re-enabled.
+     * fetched), the baseline is fetched fresh so no sibling group is zeroed.
      *
      * Empty-string colour switches the LEDs to white-balance mode (warm
      * white). Use case: user clears the picker to "no colour".
@@ -8803,6 +8829,9 @@ class BoschSmartHomeCamera extends utils.Adapter {
      * @param delta.color
      */
     async handleWallwasherUpdate(camId, delta) {
+        return this._withCameraLock(this._lightingLocks, camId, () => this.handleWallwasherUpdateLocked(camId, delta));
+    }
+    async handleWallwasherUpdateLocked(camId, delta) {
         const cam = this._cameras.get(camId);
         if (!cam || cam.generation < 2 || cam.featureLight !== true) {
             this.log.warn(`Wallwasher request for ${camId.slice(0, 8)} ignored — Gen2 lighting not supported`);
@@ -8811,7 +8840,19 @@ class BoschSmartHomeCamera extends utils.Adapter {
         if (!this._currentAccessToken) {
             throw new Error("no access token — adapter not ready");
         }
-        const current = this._lightingCache.get(camId) ?? alarm_light_1.DEFAULT_LIGHTING_STATE;
+        // Cold cache: seed from a fresh GET — DEFAULT_LIGHTING_STATE would zero the front group.
+        let current = this._lightingCache.get(camId);
+        if (!current) {
+            current =
+                (await (0, alarm_light_1.fetchLightingState)(this._httpClient, this._currentAccessToken, camId)) ??
+                    undefined;
+            if (!current) {
+                this.log.warn(`wallwasher: aborting write for ${camId.slice(0, 8)} — no cached lighting ` +
+                    `state and GET failed, refusing to guess and risk clobbering the front light`);
+                throw new Error(`lighting state not available for ${camId.slice(0, 8)}`);
+            }
+            this._lightingCache.set(camId, current);
+        }
         // Translate "" → null (white-balance), undefined → keep current
         let colorArg;
         if (delta.color === undefined) {
@@ -8851,6 +8892,9 @@ class BoschSmartHomeCamera extends utils.Adapter {
      * @param brightness  0..100
      */
     async handleFrontLightIntensityUpdate(camId, brightness) {
+        return this._withCameraLock(this._lightingLocks, camId, () => this.handleFrontLightIntensityUpdateLocked(camId, brightness));
+    }
+    async handleFrontLightIntensityUpdateLocked(camId, brightness) {
         const cam = this._cameras.get(camId);
         if (!cam || cam.generation < 2 || cam.featureLight !== true) {
             this.log.warn(`front_light_intensity write for ${camId.slice(0, 8)} ignored — Gen2 lighting not supported`);
@@ -8859,7 +8903,19 @@ class BoschSmartHomeCamera extends utils.Adapter {
         if (!this._currentAccessToken) {
             throw new Error("no access token — adapter not ready");
         }
-        const current = this._lightingCache.get(camId) ?? alarm_light_1.DEFAULT_LIGHTING_STATE;
+        // Cold cache: seed from a fresh GET — DEFAULT_LIGHTING_STATE would zero the LED groups.
+        let current = this._lightingCache.get(camId);
+        if (!current) {
+            current =
+                (await (0, alarm_light_1.fetchLightingState)(this._httpClient, this._currentAccessToken, camId)) ??
+                    undefined;
+            if (!current) {
+                this.log.warn(`front_light_intensity: aborting write for ${camId.slice(0, 8)} — no cached ` +
+                    `lighting state and GET failed, refusing to guess and risk clobbering the LED groups`);
+                throw new Error(`lighting state not available for ${camId.slice(0, 8)}`);
+            }
+            this._lightingCache.set(camId, current);
+        }
         const safeVal = Number.isFinite(brightness) ? brightness : 0;
         const next = (0, alarm_light_1.buildFrontLightUpdate)(current, safeVal);
         const result = await (0, alarm_light_1.putLightingState)(this._httpClient, this._currentAccessToken, camId, next);
@@ -8888,6 +8944,9 @@ class BoschSmartHomeCamera extends utils.Adapter {
      * @param brightness 0..100
      */
     async handleLedGroupBrightnessUpdate(camId, groupKey, brightness) {
+        return this._withCameraLock(this._lightingLocks, camId, () => this.handleLedGroupBrightnessUpdateLocked(camId, groupKey, brightness));
+    }
+    async handleLedGroupBrightnessUpdateLocked(camId, groupKey, brightness) {
         const cam = this._cameras.get(camId);
         if (!cam || cam.generation < 2 || cam.featureLight !== true) {
             this.log.warn(`${groupKey === "topLedLightSettings" ? "top_led_brightness" : "bottom_led_brightness"} ` +
@@ -8938,6 +8997,9 @@ class BoschSmartHomeCamera extends utils.Adapter {
      *   light.py polarity.
      */
     async handleFrontLightWhiteBalanceUpdate(camId, whiteBalance) {
+        return this._withCameraLock(this._lightingLocks, camId, () => this.handleFrontLightWhiteBalanceUpdateLocked(camId, whiteBalance));
+    }
+    async handleFrontLightWhiteBalanceUpdateLocked(camId, whiteBalance) {
         const cam = this._cameras.get(camId);
         if (!cam || cam.generation < 2 || cam.featureLight !== true) {
             this.log.warn(`front_light_white_balance write for ${camId.slice(0, 8)} ignored — ` +
@@ -8965,7 +9027,8 @@ class BoschSmartHomeCamera extends utils.Adapter {
         const safeVal = Number.isFinite(whiteBalance) ? whiteBalance : -1;
         const frontOn = await this._readBoolState(`cameras.${camId}.front_light_enabled`);
         const token = this._currentAccessToken;
-        const result = await this._withCameraLock(this._frontWbLocks, camId, async () => {
+        // Serialized by the caller's lighting lock (no nested take).
+        const result = await (async () => {
             const base = this._lightingCache.get(camId) ?? current;
             if (base.frontLightSettings.brightness > 0) {
                 this._lastFrontBrightness.set(camId, base.frontLightSettings.brightness);
@@ -8995,7 +9058,7 @@ class BoschSmartHomeCamera extends utils.Adapter {
                 }
             }
             return put;
-        });
+        })();
         if (!result) {
             await this.upsertState(`cameras.${camId}.front_light_white_balance`, safeVal);
             this.log.info(`front_light_white_balance for camera ${camId.slice(0, 8)}: light off, ` +
@@ -9995,6 +10058,9 @@ class BoschSmartHomeCamera extends utils.Adapter {
      * @param state.wallwasher
      */
     async _applyLightingState(camId, state) {
+        return this._withCameraLock(this._lightingLocks, camId, () => this._applyLightingStateLocked(camId, state));
+    }
+    async _applyLightingStateLocked(camId, state) {
         if (!this._currentAccessToken) {
             throw new Error(`Cannot set light for ${camId} — no access token`);
         }
@@ -10013,6 +10079,7 @@ class BoschSmartHomeCamera extends utils.Adapter {
         };
         let cloudFrontErr = null;
         let cloudFrontOk = false;
+        let cloudWallOk = true; // Gen1 wallwasher is covered by the single override PUT
         if (isGen2) {
             const base = `${auth_1.CLOUD_API}/v11/video_inputs/${camId}/lighting/switch`;
             try {
@@ -10022,14 +10089,14 @@ class BoschSmartHomeCamera extends utils.Adapter {
                 ]);
                 const ok1 = [200, 201, 204].includes(r1.status);
                 const ok2 = [200, 201, 204].includes(r2.status);
-                if (ok1 || ok2) {
-                    cloudFrontOk = true;
-                }
-                else {
+                cloudFrontOk = ok1;
+                cloudWallOk = ok2;
+                if (!ok1 || !ok2) {
                     cloudFrontErr = `HTTP front=${r1.status} topdown=${r2.status}`;
                 }
             }
             catch (err) {
+                cloudWallOk = false;
                 cloudFrontErr = err instanceof Error ? err.message : String(err);
             }
             // v0.7.5: Gen2 front-light local RCP fallback (HTTPS port 443 + Digest auth;
@@ -10060,9 +10127,16 @@ class BoschSmartHomeCamera extends utils.Adapter {
                         this.log.debug(`Light LOCAL RCP fallback also failed for ${camId.slice(0, 8)}`);
                     }
                 }
-                if (!cloudFrontOk) {
-                    throw new Error(`Cloud light PUT Gen2 failed (${cloudFrontErr}) and no working LAN fallback`);
+            }
+            // Confirm only what actually succeeded; a failed group must not be acked.
+            if (!cloudFrontOk || !cloudWallOk) {
+                if (cloudFrontOk) {
+                    await this.setStateAsync(`cameras.${camId}.front_light_enabled`, state.frontLight, true);
                 }
+                if (cloudWallOk) {
+                    await this.setStateAsync(`cameras.${camId}.wallwasher_enabled`, state.wallwasher, true);
+                }
+                throw new Error(`Cloud light PUT Gen2 failed (${cloudFrontErr}) and no working LAN fallback`);
             }
         }
         else {

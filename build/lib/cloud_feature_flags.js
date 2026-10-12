@@ -13,6 +13,7 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.fetchFeatureFlags = fetchFeatureFlags;
+const axios_1 = require("axios");
 const auth_1 = require("./auth");
 // ── Public API ────────────────────────────────────────────────────────────────
 /**
@@ -20,9 +21,13 @@ const auth_1 = require("./auth");
  *
  * @param httpClient  Shared Axios instance
  * @param accessToken Bearer token
+ * @param opts             Optional hooks
+ * @param opts.onNoResponse Called when no HTTP response arrived at all
+ *                          (timeout / network error); a response with a bad
+ *                          body or error status does NOT trigger it.
  * @returns           FeatureFlagsResult on success, null on any error
  */
-async function fetchFeatureFlags(httpClient, accessToken) {
+async function fetchFeatureFlags(httpClient, accessToken, opts) {
     const url = `${auth_1.CLOUD_API}/v11/feature_flags`;
     const headers = { Authorization: `Bearer ${accessToken}` };
     try {
@@ -45,7 +50,10 @@ async function fetchFeatureFlags(httpClient, accessToken) {
             raw: JSON.stringify(data),
         };
     }
-    catch {
+    catch (err) {
+        if (!(0, axios_1.isAxiosError)(err) || !err.response) {
+            opts?.onNoResponse?.();
+        }
         return null;
     }
 }

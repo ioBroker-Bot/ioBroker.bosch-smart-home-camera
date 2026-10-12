@@ -11,7 +11,7 @@
  * Port of HA coordinator._feature_flags fetch in _async_update_data().
  */
 
-import type { AxiosInstance } from "axios";
+import { isAxiosError, type AxiosInstance } from "axios";
 import { CLOUD_API } from "./auth";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -37,11 +37,16 @@ export interface FeatureFlagsResult {
  *
  * @param httpClient  Shared Axios instance
  * @param accessToken Bearer token
+ * @param opts             Optional hooks
+ * @param opts.onNoResponse Called when no HTTP response arrived at all
+ *                          (timeout / network error); a response with a bad
+ *                          body or error status does NOT trigger it.
  * @returns           FeatureFlagsResult on success, null on any error
  */
 export async function fetchFeatureFlags(
     httpClient: AxiosInstance,
     accessToken: string,
+    opts?: { onNoResponse?: () => void },
 ): Promise<FeatureFlagsResult | null> {
     const url = `${CLOUD_API}/v11/feature_flags`;
     const headers = { Authorization: `Bearer ${accessToken}` };
@@ -68,7 +73,10 @@ export async function fetchFeatureFlags(
             display: enabled.join(", "),
             raw: JSON.stringify(data),
         };
-    } catch {
+    } catch (err: unknown) {
+        if (!isAxiosError(err) || !err.response) {
+            opts?.onNoResponse?.();
+        }
         return null;
     }
 }

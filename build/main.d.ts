@@ -288,6 +288,12 @@ declare class BoschSmartHomeCamera extends utils.Adapter {
      * STATE_POLL_INTERVAL_MS=60s × 5 = 300s cadence — mirrors HA's do_slow logic.
      */
     private _diagPollTick;
+    /** True once the account-level feature-flags fetch got any HTTP response. */
+    private _featureFlagsAnswered;
+    /** Short-retry attempts used for the first feature-flags fetch after start. */
+    private _featureFlagsRetries;
+    private static readonly FIRST_FETCH_RETRY_MS;
+    private static readonly FIRST_FETCH_MAX_RETRIES;
     /** Slow-tier runs every SLOW_TIER_THRESHOLD state-poll ticks (5 × 60s = 300s). */
     private static readonly SLOW_TIER_THRESHOLD;
     /** v0.7.4: outage-ping throttle (ms). */
@@ -340,7 +346,8 @@ declare class BoschSmartHomeCamera extends utils.Adapter {
     private _pendingFrontWb;
     /** Last non-zero front brightness per camera (restored for WB writes at brightness 0). */
     private _lastFrontBrightness;
-    private _frontWbLocks;
+    /** Per-camera lock shared by every writer of the Gen2 lighting state. */
+    private _lightingLocks;
     private _intrusionConfigCache;
     private _audioCache;
     private _lensElevationCache;
@@ -1673,8 +1680,7 @@ declare class BoschSmartHomeCamera extends utils.Adapter {
      * The Bosch lighting/switch endpoint requires the full body — caller
      * passes only the delta and we merge into the cached state. If we have
      * no cache yet (first call after start, before the state-poll tick has
-     * fetched), seed with `DEFAULT_LIGHTING_STATE` so the front spotlight
-     * isn't accidentally re-enabled.
+     * fetched), the baseline is fetched fresh so no sibling group is zeroed.
      *
      * Empty-string colour switches the LEDs to white-balance mode (warm
      * white). Use case: user clears the picker to "no colour".
@@ -1685,6 +1691,7 @@ declare class BoschSmartHomeCamera extends utils.Adapter {
      * @param delta.color
      */
     private handleWallwasherUpdate;
+    private handleWallwasherUpdateLocked;
     /**
      * v1.3.x: Set the front spotlight brightness (0..100) for a Gen2 camera.
      *
@@ -1699,6 +1706,7 @@ declare class BoschSmartHomeCamera extends utils.Adapter {
      * @param brightness  0..100
      */
     private handleFrontLightIntensityUpdate;
+    private handleFrontLightIntensityUpdateLocked;
     /**
      * v1.9.0: set a single LED group's brightness (top OR bottom only) for a
      * Gen2 camera. Mirrors HA's `number.<cam>_top_led_brightness` /
@@ -1710,6 +1718,7 @@ declare class BoschSmartHomeCamera extends utils.Adapter {
      * @param brightness 0..100
      */
     private handleLedGroupBrightnessUpdate;
+    private handleLedGroupBrightnessUpdateLocked;
     /**
      * v1.9.0: set the front spotlight's white balance for a Gen2 camera.
      * Mirrors HA's `light.<cam>_front_light` COLOR_TEMP entity. Always
@@ -1720,6 +1729,7 @@ declare class BoschSmartHomeCamera extends utils.Adapter {
      *   light.py polarity.
      */
     private handleFrontLightWhiteBalanceUpdate;
+    private handleFrontLightWhiteBalanceUpdateLocked;
     /**
      * v1.9.0: write soft_light_fading via PUT /v11/video_inputs/{id}/lighting
      * (same endpoint as darkness_threshold — Bosch requires the full body).
@@ -1982,6 +1992,7 @@ declare class BoschSmartHomeCamera extends utils.Adapter {
      * @param state.wallwasher
      */
     private _applyLightingState;
+    private _applyLightingStateLocked;
     /**
      * Image rotation: pure client-side flag — no Bosch Cloud API endpoint exists.
      *

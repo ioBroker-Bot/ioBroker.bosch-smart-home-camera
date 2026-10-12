@@ -245,6 +245,12 @@ export declare class FcmListener extends EventEmitter {
     /** Injectable deps — overridable in tests. */
     readonly _deps: FcmDeps;
     private _fcmToken;
+    /** Last token confirmed by CBS; seeded from persisted creds so it survives restarts. */
+    private _lastRegisteredToken;
+    /** Tokens whose logout was already attempted — prevents repeat calls. */
+    private readonly _loggedOutTokens;
+    /** In-flight best-effort logout (exposed for tests). */
+    _logoutPromise: Promise<void> | null;
     private _running;
     private _clientHandle;
     /** Periodic CBS re-registration timer — cleared on stop(). */
@@ -312,6 +318,16 @@ export declare class FcmListener extends EventEmitter {
      * @throws FcmCbsRegistrationError on non-retryable HTTP 4xx.
      */
     _registerWithCbs(token: string): Promise<void>;
+    /**
+     * Deregister a superseded device token at CBS.
+     *
+     * Endpoint: PUT /v11/registration/logout?deviceToken=<token> → 204.
+     * Best-effort: never throws, attempted at most once per token, and the
+     * token is never logged.
+     *
+     * @param oldToken Previously registered FCM token.
+     */
+    _logoutToken(oldToken: string): Promise<void>;
     /**
      * Handle an incoming FCM push message from Bosch.
      *

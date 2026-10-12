@@ -193,6 +193,13 @@ async function bootWithTokens(db: MockDatabase, adapter: TestAdapter): Promise<v
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
+// Baseline returned by the cold-cache GET /lighting/switch before the first lighting write.
+const COLD_CACHE_SEED = {
+    frontLightSettings: { brightness: 0, color: null, whiteBalance: -1.0 },
+    topLedLightSettings: { brightness: 10, color: "#FF0000", whiteBalance: null },
+    bottomLedLightSettings: { brightness: 10, color: "#FF0000", whiteBalance: null },
+};
+
 describe("main adapter — siren + wallwasher handlers (v0.5.1)", () => {
     afterEach(() => {
         restoreAxios();
@@ -285,6 +292,7 @@ describe("main adapter — siren + wallwasher handlers (v0.5.1)", () => {
         };
         stubAxiosSequence([
             { status: 200, data: CAMERAS_GEN2_ONLY },
+            { status: 200, data: COLD_CACHE_SEED }, // cold-cache GET /lighting/switch
             { status: 200, data: updatedLighting }, // PUT /lighting/switch response
         ]);
         const { db, adapter } = createAdapterWithMocks(CAMERAS_GEN2_ONLY);
@@ -306,6 +314,7 @@ describe("main adapter — siren + wallwasher handlers (v0.5.1)", () => {
         };
         stubAxiosSequence([
             { status: 200, data: CAMERAS_GEN2_ONLY },
+            { status: 200, data: COLD_CACHE_SEED }, // cold-cache GET /lighting/switch
             { status: 200, data: updatedLighting },
         ]);
         const { db, adapter } = createAdapterWithMocks(CAMERAS_GEN2_ONLY);
@@ -327,6 +336,7 @@ describe("main adapter — siren + wallwasher handlers (v0.5.1)", () => {
         };
         stubAxiosSequence([
             { status: 200, data: CAMERAS_GEN2_ONLY },
+            { status: 200, data: COLD_CACHE_SEED }, // cold-cache GET /lighting/switch
             { status: 200, data: warmWhite },
         ]);
         const { db, adapter } = createAdapterWithMocks(CAMERAS_GEN2_ONLY);
@@ -365,6 +375,7 @@ describe("main adapter — siren + wallwasher handlers (v0.5.1)", () => {
         };
         stubAxiosSequence([
             { status: 200, data: CAMERAS_GEN2_ONLY },
+            { status: 200, data: COLD_CACHE_SEED }, // cold-cache GET /lighting/switch
             { status: 200, data: lighting1 }, // first wallwasher_brightness PUT
             { status: 200, data: lighting2 }, // second PUT (from cache base)
         ]);
@@ -404,6 +415,7 @@ describe("main adapter — siren + wallwasher handlers (v0.5.1)", () => {
         };
         stubAxiosSequence([
             { status: 200, data: CAMERAS_GEN2_ONLY },
+            { status: 200, data: COLD_CACHE_SEED }, // cold-cache GET /lighting/switch
             { status: 200, data: lightingWith }, // wallwasher brightness PUT response
         ]);
         const { db, adapter } = createAdapterWithMocks(CAMERAS_GEN2_ONLY);
@@ -433,6 +445,7 @@ describe("main adapter — siren + wallwasher handlers (v0.5.1)", () => {
         };
         stubAxiosSequence([
             { status: 200, data: CAMERAS_GEN2_ONLY },
+            { status: 200, data: COLD_CACHE_SEED }, // cold-cache GET /lighting/switch
             { status: 200, data: updatedLighting }, // PUT /lighting/switch response
         ]);
         const { db, adapter } = createAdapterWithMocks(CAMERAS_GEN2_ONLY);
@@ -475,6 +488,7 @@ describe("main adapter — siren + wallwasher handlers (v0.5.1)", () => {
         };
         stubAxiosSequence([
             { status: 200, data: CAMERAS_GEN2_ONLY },
+            { status: 200, data: COLD_CACHE_SEED }, // cold-cache GET /lighting/switch
             { status: 200, data: cachedState }, // wallwasher_brightness write seeds cache
             { status: 200, data: updatedLighting }, // front_light_intensity PUT
         ]);

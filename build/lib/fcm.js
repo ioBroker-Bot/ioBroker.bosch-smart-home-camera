@@ -195,6 +195,12 @@ class FcmListener extends node_events_1.EventEmitter {
     /** Injectable deps — overridable in tests. */
     _deps;
     _fcmToken = null;
+    /** Last token confirmed by CBS; seeded from persisted creds so it survives restarts. */
+    _lastRegisteredToken = null;
+    /** Tokens whose logout was already attempted — prevents repeat calls. */
+    _loggedOutTokens = new Set();
+    /** In-flight best-effort logout (exposed for tests). */
+    _logoutPromise = null;
     _running = false;
     _clientHandle = null;
     /** Periodic CBS re-registration timer — cleared on stop(). */
@@ -212,6 +218,7 @@ class FcmListener extends node_events_1.EventEmitter {
         this._bearerToken = bearerToken;
         this._options = options ?? {};
         this._deps = { ...DEFAULT_DEPS, ...deps };
+        this._lastRegisteredToken = this._options.savedCredentials?.fcmToken || null;
     }
     // ── Public API ────────────────────────────────────────────────────────────
     /**
@@ -411,6 +418,13 @@ class FcmListener extends node_events_1.EventEmitter {
             await this._registerWithCbs(fcmRegistration.token);
             // Emit registered event so caller can persist credentials
             this.emit("registered", creds);
+            // Registration confirmed: retire the superseded token (best-effort,
+            // detached so it can never delay or fail the start).
+            const previousToken = this._lastRegisteredToken;
+            this._lastRegisteredToken = fcmRegistration.token;
+            if (previousToken && previousToken !== fcmRegistration.token) {
+                this._logoutPromise = this._logoutToken(previousToken);
+            }
             // Step 4: Start FcmClient TLS socket
             const client = new deps.FcmClient({
                 acg: {
@@ -515,6 +529,36 @@ class FcmListener extends node_events_1.EventEmitter {
         }
         // 5xx other than duplicate — transient, caller may retry
         throw new Error(`CBS /v11/devices HTTP ${status}: ${body.slice(0, 200)}`);
+    }
+    /**
+     * Deregister a superseded device token at CBS.
+     *
+     * Endpoint: PUT /v11/registration/logout?deviceToken=<token> → 204.
+     * Best-effort: never throws, attempted at most once per token, and the
+     * token is never logged.
+     *
+     * @param oldToken Previously registered FCM token.
+     */
+    async _logoutToken(oldToken) {
+        if (this._loggedOutTokens.has(oldToken)) {
+            return;
+        }
+        this._loggedOutTokens.add(oldToken);
+        try {
+            const resp = await this._httpClient.put(`${CLOUD_API}/v11/registration/logout`, undefined, {
+                params: { deviceToken: oldToken },
+                headers: { Authorization: `Bearer ${this._bearerToken}` },
+                timeout: 10_000,
+                validateStatus: () => true,
+            });
+            if (resp.status !== 204) {
+                this.emit("error-logged", `CBS old-token logout HTTP ${resp.status}`);
+            }
+        }
+        catch (err) {
+            const name = err instanceof Error ? err.name : "error";
+            this.emit("error-logged", `CBS old-token logout failed (${name})`);
+        }
     }
     /**
      * Handle an incoming FCM push message from Bosch.

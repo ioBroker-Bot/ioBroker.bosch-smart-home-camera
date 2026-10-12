@@ -394,6 +394,69 @@ describe("F13 _pollFeatureFlags", () => {
     });
 });
 
+describe("First feature-flags fetch — short retry", () => {
+    async function setup(stub: sinon.SinonStub) {
+        stubAxiosSequence([{ status: 200, data: CAMERAS_BODY }]);
+        const { db, adapter } = createAdapterWithMocks(undefined, stub);
+        await bootWithTokens(db, adapter);
+        const timers: Array<{ fn: () => void; ms: number }> = [];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (adapter as any).setTimeout = (fn: () => void, ms: number) => {
+            timers.push({ fn, ms });
+            return {};
+        };
+        return { adapter, timers };
+    }
+    const noResponse = (
+        _c: unknown,
+        _t: string,
+        opts?: { onNoResponse?: () => void },
+    ): Promise<null> => {
+        opts?.onNoResponse?.();
+        return Promise.resolve(null);
+    };
+
+    it("schedules a ~30 s retry when the first fetch got no response, max 3", async () => {
+        const stub = sinon.stub().callsFake(noResponse);
+        const { adapter, timers } = await setup(stub);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const a = adapter as any;
+        await a._pollFeatureFlags("t");
+        expect(timers).to.have.length(1);
+        expect(timers[0].ms).to.equal(30_000);
+        for (let i = 0; i < 5; i++) {
+            const t = timers.shift();
+            if (t) {
+                t.fn();
+                await new Promise((r) => setImmediate(r));
+            }
+        }
+        expect(stub.callCount).to.equal(4); // initial + 3 retries
+    });
+
+    it("does not retry when a response arrived (even with a broken body)", async () => {
+        const stub = sinon.stub().resolves(null);
+        const { adapter, timers } = await setup(stub);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (adapter as any)._pollFeatureFlags("t");
+        expect(timers).to.have.length(0);
+    });
+
+    it("stops retrying once an answer arrived", async () => {
+        const stub = sinon.stub();
+        stub.onFirstCall().callsFake(noResponse);
+        stub.onSecondCall().resolves({ display: "A", raw: "{}" });
+        const { adapter, timers } = await setup(stub);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const a = adapter as any;
+        await a._pollFeatureFlags("t");
+        timers.shift()!.fn();
+        await new Promise((r) => setImmediate(r));
+        expect(stub.callCount).to.equal(2);
+        expect(timers).to.have.length(0);
+    });
+});
+
 // ── F4/F6 LAN diagnostic poll tests ─────────────────────────────────────────
 
 describe("F4 onvif_scopes", () => {

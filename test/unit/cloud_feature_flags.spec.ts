@@ -201,3 +201,47 @@ describe("fetchFeatureFlags() — branch coverage", () => {
         expect(result!.display).to.equal("REAL_TRUE");
     });
 });
+
+// ── onNoResponse — distinguishes "no answer" from "answer with bad body" ─────
+
+describe("fetchFeatureFlags() — onNoResponse", () => {
+    function clientWithAdapter(adapter: () => Promise<unknown>) {
+        const c = makeClient();
+        c.defaults.adapter = adapter as never;
+        return c;
+    }
+
+    it("fires on a timeout / network error (no HTTP response)", async () => {
+        const c = clientWithAdapter(() => {
+            const e = Object.assign(new Error("timeout of 8000ms exceeded"), {
+                isAxiosError: true,
+                code: "ECONNABORTED",
+            });
+            return Promise.reject(e);
+        });
+        let fired = 0;
+        const result = await fetchFeatureFlags(c, FAKE_TOKEN, { onNoResponse: () => fired++ });
+        expect(result).to.equal(null);
+        expect(fired).to.equal(1);
+    });
+
+    it("does not fire for an HTTP error status", async () => {
+        stubAxiosError(503);
+        let fired = 0;
+        const result = await fetchFeatureFlags(makeClient(), FAKE_TOKEN, {
+            onNoResponse: () => fired++,
+        });
+        expect(result).to.equal(null);
+        expect(fired).to.equal(0);
+    });
+
+    it("does not fire for HTTP 200 with a malformed body", async () => {
+        stubAxiosSequence([{ status: 200, data: "not-json-object" }]);
+        let fired = 0;
+        const result = await fetchFeatureFlags(makeClient(), FAKE_TOKEN, {
+            onNoResponse: () => fired++,
+        });
+        expect(result).to.equal(null);
+        expect(fired).to.equal(0);
+    });
+});
